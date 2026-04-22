@@ -10,24 +10,14 @@ import { v4 as uuidv4 } from 'uuid'
 
 export default function ChatPage() {
   const router = useRouter()
-  const {
-    messages,
-    setMessages,
-    addMessage,
-    updateMessage,
-    currentConversationId,
-    setCurrentConversationId,
-    conversations,
-    setConversations,
-    addConversation,
-    setIsLoading,
-    theme,
-    setTheme,
-  } = useChatStore()
-
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [userId, setUserId] = useState<string | null>(null)
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [messages, setMessages] = useState<UIMessage[]>([])
+  const [isLoading, setIsLoading] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [theme, setTheme] = useState<'light' | 'dark'>('light')
 
   // Check auth on mount
   useEffect(() => {
@@ -47,17 +37,36 @@ export default function ChatPage() {
         setUserId(session.user.id)
         
         // Load conversations
-        const { data: convData } = await supabase
-          .from('conversations')
-          .select('*')
-          .eq('user_id', session.user.id)
-          .order('created_at', { ascending: false })
+        try {
+          const { data: convData } = await supabase
+            .from('conversations')
+            .select('*')
+            .eq('user_id', session.user.id)
+            .order('created_at', { ascending: false })
 
-        if (convData) {
-          setConversations(convData as Conversation[])
-          
-          // If no conversations, create one
-          if (convData.length === 0) {
+          if (convData && convData.length > 0) {
+            setConversations(convData as Conversation[])
+            setCurrentConversationId(convData[0].id)
+            
+            // Load messages for first conversation
+            const { data: msgData } = await supabase
+              .from('messages')
+              .select('*')
+              .eq('conversation_id', convData[0].id)
+              .order('created_at', { ascending: true })
+
+            if (msgData) {
+              const uiMessages: UIMessage[] = msgData.map((msg: any) => ({
+                id: msg.id,
+                content: msg.content,
+                role: msg.role,
+                imageUrls: msg.image_urls,
+                timestamp: new Date(msg.created_at).getTime(),
+              }))
+              setMessages(uiMessages)
+            }
+          } else {
+            // Create first conversation
             const newConv: Conversation = {
               id: uuidv4(),
               user_id: session.user.id,
@@ -68,13 +77,14 @@ export default function ChatPage() {
               updated_at: new Date().toISOString(),
             }
             
-            await supabase.from('conversations').insert([newConv])
-            addConversation(newConv)
-            setCurrentConversationId(newConv.id)
-          } else {
-            // Select first conversation
-            setCurrentConversationId(convData[0].id)
+            const { error } = await supabase.from('conversations').insert([newConv])
+            if (!error) {
+              setConversations([newConv])
+              setCurrentConversationId(newConv.id)
+            }
           }
+        } catch (error) {
+          console.error('[v0] Load conversations error:', error)
         }
       } catch (error) {
         console.error('[v0] Auth error:', error)
@@ -83,93 +93,11 @@ export default function ChatPage() {
     }
 
     checkAuth()
-  }, [router])
+  }, [])
 
-  // Load conversations from DB
-  const loadConversations = async (uid: string): Promise<Conversation[] | null> => {
-    try {
-      const supabase = getSupabase()
-      const { data } = await supabase
-        .from('conversations')
-        .select('*')
-        .eq('user_id', uid)
-        .order('created_at', { ascending: false })
-
-      if (data) {
-        setConversations(data as Conversation[])
-        return data as Conversation[]
-      }
-      return null
-    } catch (error) {
-      console.error('[v0] Load conversations error:', error)
-      return null
-    }
-  }
-
-  // Load messages for a conversation
-  const loadMessages = async (conversationId: string) => {
-    try {
-      const supabase = getSupabase()
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('conversation_id', conversationId)
-        .order('created_at', { ascending: true })
-
-      if (data) {
-        const uiMessages: UIMessage[] = data.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          role: msg.role,
-          imageUrls: msg.image_urls,
-          audioUrl: msg.audio_url,
-          fileUrls: msg.file_urls,
-          timestamp: new Date(msg.created_at).getTime(),
-        }))
-        setMessages(uiMessages)
-      }
-    } catch (error) {
-      console.error('[v0] Load messages error:', error)
-    }
-  }
-
-  // Create new conversation
-  const handleNewConversation = async () => {
-    if (!userId) return
-
-    try {
-      const supabase = getSupabase()
-      const newConv: Conversation = {
-        id: uuidv4(),
-        user_id: userId,
-        title: 'New Conversation',
-        is_public: false,
-        is_deleted: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
-
-      const { error } = await supabase.from('conversations').insert([newConv])
-
-      if (!error) {
-        addConversation(newConv)
-        setCurrentConversationId(newConv.id)
-        setMessages([])
-      }
-    } catch (error) {
-      console.error('[v0] New conversation error:', error)
-    }
-  }
-
-  // Select conversation
-  const handleSelectConversation = async (id: string) => {
-    setCurrentConversationId(id)
-    await loadMessages(id)
-  }
-
-  // Send message
   const handleSendMessage = async (content: string, images?: string[], files?: string[]) => {
     if (!userId || !currentConversationId) return
+    if (!content.trim()) return
 
     setIsLoading(true)
 
@@ -179,13 +107,12 @@ export default function ChatPage() {
       content,
       role: 'user',
       imageUrls: images,
-      fileUrls: files,
       timestamp: Date.now(),
     }
 
-    addMessage(userMessage)
+    setMessages([...messages, userMessage])
 
-    // Save user message to DB
+    // Save to DB
     try {
       const supabase = getSupabase()
       await supabase.from('messages').insert([
@@ -196,26 +123,17 @@ export default function ChatPage() {
           content,
           image_urls: images || [],
           file_urls: files || [],
-          created_at: new Date(userMessage.timestamp).toISOString(),
+          created_at: new Date().toISOString(),
         },
       ])
     } catch (error) {
       console.error('[v0] Save message error:', error)
     }
 
-    // Call AI API
+    // Call AI
     try {
       const assistantMessageId = uuidv4()
-      const assistantMessage: UIMessage = {
-        id: assistantMessageId,
-        content: '',
-        role: 'assistant',
-        timestamp: Date.now(),
-        isLoading: true,
-      }
-
-      addMessage(assistantMessage)
-
+      
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -230,9 +148,22 @@ export default function ChatPage() {
         }),
       })
 
-      if (!response.ok) throw new Error('Chat API error')
+      if (!response.ok) {
+        console.error('[v0] Chat API error:', response.statusText)
+        setIsLoading(false)
+        return
+      }
 
       let fullContent = ''
+      const assistantMessage: UIMessage = {
+        id: assistantMessageId,
+        content: '',
+        role: 'assistant',
+        timestamp: Date.now(),
+      }
+      
+      setMessages((prev) => [...prev, assistantMessage])
+
       const reader = response.body?.getReader()
       const decoder = new TextDecoder()
 
@@ -256,29 +187,17 @@ export default function ChatPage() {
                 const parsed = JSON.parse(data)
                 if (parsed.type === 'text-delta' && parsed.delta) {
                   fullContent += parsed.delta
-                  updateMessage(assistantMessageId, {
-                    content: fullContent,
-                    isLoading: false,
-                  })
+                  setMessages((prev) =>
+                    prev.map((msg) =>
+                      msg.id === assistantMessageId
+                        ? { ...msg, content: fullContent }
+                        : msg
+                    )
+                  )
                 }
               } catch (e) {
                 // Skip invalid JSON
               }
-            }
-          }
-        }
-
-        // Handle any remaining buffer
-        if (buffer.trim().startsWith('data:')) {
-          const data = buffer.trim().slice(5).trim()
-          if (data !== '[DONE]') {
-            try {
-              const parsed = JSON.parse(data)
-              if (parsed.type === 'text-delta' && parsed.delta) {
-                fullContent += parsed.delta
-              }
-            } catch (e) {
-              // Skip
             }
           }
         }
@@ -301,19 +220,69 @@ export default function ChatPage() {
       }
     } catch (error) {
       console.error('[v0] Error sending message:', error)
-      updateMessage(messages[messages.length - 1]?.id, {
-        content: 'Sorry, there was an error. Please try again.',
-        isLoading: false,
-      })
     } finally {
       setIsLoading(false)
     }
   }
 
+  const handleNewConversation = async () => {
+    if (!userId) return
+
+    try {
+      const supabase = getSupabase()
+      const newConv: Conversation = {
+        id: uuidv4(),
+        user_id: userId,
+        title: 'New Conversation',
+        is_public: false,
+        is_deleted: false,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+
+      const { error } = await supabase.from('conversations').insert([newConv])
+
+      if (!error) {
+        setConversations([newConv, ...conversations])
+        setCurrentConversationId(newConv.id)
+        setMessages([])
+      }
+    } catch (error) {
+      console.error('[v0] New conversation error:', error)
+    }
+  }
+
+  const handleSelectConversation = async (id: string) => {
+    setCurrentConversationId(id)
+    
+    try {
+      const supabase = getSupabase()
+      const { data } = await supabase
+        .from('messages')
+        .select('*')
+        .eq('conversation_id', id)
+        .order('created_at', { ascending: true })
+
+      if (data) {
+        const uiMessages: UIMessage[] = data.map((msg: any) => ({
+          id: msg.id,
+          content: msg.content,
+          role: msg.role,
+          imageUrls: msg.image_urls,
+          timestamp: new Date(msg.created_at).getTime(),
+        }))
+        setMessages(uiMessages)
+      }
+    } catch (error) {
+      console.error('[v0] Load messages error:', error)
+    }
+  }
+
   if (!isAuthenticated) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background">
+      <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
+          <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"></div>
           <p className="text-muted-foreground">Loading...</p>
         </div>
       </div>
@@ -322,52 +291,25 @@ export default function ChatPage() {
 
   return (
     <div className="flex h-screen bg-background">
-      {/* Sidebar */}
-      <div className="hidden lg:block flex-shrink-0">
+      {sidebarOpen && (
         <Sidebar
+          conversations={conversations}
+          currentConversationId={currentConversationId}
           onSelectConversation={handleSelectConversation}
           onNewConversation={handleNewConversation}
-          onSelectPrompt={(prompt) => handleSendMessage(prompt)}
-          isOpen={sidebarOpen}
+          userId={userId}
         />
-      </div>
-
-      {/* Main Chat */}
+      )}
+      
       <div className="flex-1 flex flex-col">
         <ChatArea
           onSendMessage={handleSendMessage}
-          isLoading={false}
+          isLoading={isLoading}
           onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-          theme={theme as any}
-          onThemeChange={(newTheme) => {
-            setTheme(newTheme)
-            if (newTheme === 'dark') {
-              document.documentElement.classList.add('dark')
-            } else {
-              document.documentElement.classList.remove('dark')
-            }
-          }}
+          theme={theme}
+          onThemeChange={setTheme}
         />
       </div>
-
-      {/* Mobile Sidebar */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 lg:hidden">
-          <div
-            className="absolute inset-0 bg-black/50"
-            onClick={() => setSidebarOpen(false)}
-          />
-          <div className="absolute left-0 inset-y-0 w-64">
-            <Sidebar
-              onSelectConversation={handleSelectConversation}
-              onNewConversation={handleNewConversation}
-              onSelectPrompt={(prompt) => handleSendMessage(prompt)}
-              isOpen={sidebarOpen}
-              onClose={() => setSidebarOpen(false)}
-            />
-          </div>
-        </div>
-      )}
     </div>
   )
 }
