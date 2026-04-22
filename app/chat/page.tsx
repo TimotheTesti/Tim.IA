@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { SettingsDialog } from '@/components/settings-dialog'
 import { getSupabase } from '@/lib/supabase'
 
 type Message = { role: 'user' | 'assistant', content: string }
@@ -38,12 +39,19 @@ export default function ChatPage() {
     setLoading(true)
 
     try {
-      console.log('[v0] Sending to /api/chat:', { messages: [...messages, userMessage] })
-      
+      const supabase = getSupabase()
+      const { data: sessionRes } = await supabase.auth.getSession()
+      const accessToken = sessionRes.session?.access_token
+
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (accessToken) {
+        headers.Authorization = `Bearer ${accessToken}`
+      }
+
       const response = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ messages: [...messages, userMessage] })
+        headers,
+        body: JSON.stringify({ messages: [...messages, userMessage] }),
       })
 
       if (!response.ok) {
@@ -107,6 +115,12 @@ export default function ChatPage() {
 
   return (
     <div className="h-screen bg-background flex flex-col">
+      <header className="flex items-center justify-between border-b border-border px-4 py-3">
+        <span className="font-semibold text-foreground">Tim</span>
+        <div className="relative">
+          <SettingsDialog />
+        </div>
+      </header>
       <div className="flex-1 overflow-auto p-4 space-y-4">
         {messages.length === 0 && (
           <div className="text-center text-muted-foreground mt-20">

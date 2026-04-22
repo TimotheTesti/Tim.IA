@@ -80,3 +80,11 @@ export interface SuggestedPrompt {
   is_active: boolean
   created_at: string
 }
+
+export interface UserMemoryEntry {
+  id: string
+  user_id: string
+  content: string
+  created_at: string
+  updated_at: string
+}
