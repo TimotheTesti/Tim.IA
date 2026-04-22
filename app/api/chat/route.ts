@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     }
 
     const result = streamText({
-      model: groq('llama-3.1-70b-versatile'),
+      model: groq('llama-3.3-70b-versatile'),
       system: TIM_SYSTEM_PROMPT,
       messages: messages.map((msg) => ({
         role: msg.role as 'user' | 'assistant',
