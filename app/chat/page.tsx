@@ -83,7 +83,7 @@ export default function ChatPage() {
     }
 
     checkAuth()
-  }, [router, addConversation, setConversations, setCurrentConversationId])
+  }, [router])
 
   // Load conversations from DB
   const loadConversations = async (uid: string): Promise<Conversation[] | null> => {

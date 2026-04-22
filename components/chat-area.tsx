@@ -206,17 +206,9 @@ export function ChatArea({
               <h2 className="text-2xl font-semibold text-foreground mb-2">
                 Welcome to Tim
               </h2>
-              <p className="text-muted-foreground max-w-sm mb-6">
-                Hi! I&apos;m Tim, your AI assistant. Start a conversation or
-                choose a suggested prompt below.
+              <p className="text-muted-foreground max-w-sm">
+                Start typing a message to begin the conversation with Tim, your AI assistant.
               </p>
-              <Button
-                onClick={() => onSendMessage('Hello Tim!')}
-                variant="default"
-                size="sm"
-              >
-                Get Started
-              </Button>
             </motion.div>
           ) : (
             <motion.div
