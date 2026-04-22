@@ -7,7 +7,6 @@ import { Sidebar } from '@/components/sidebar'
 import { useChatStore, UIMessage } from '@/lib/store'
 import { getSupabase, Conversation } from '@/lib/supabase'
 import { v4 as uuidv4 } from 'uuid'
-import { useEffect as useReactEffect } from 'react'
 
 export default function ChatPage() {
   const router = useRouter()
@@ -31,7 +30,7 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true)
 
   // Check auth on mount
-  useReactEffect(() => {
+  useEffect(() => {
     const checkAuth = async () => {
       try {
         const supabase = getSupabase()
@@ -46,7 +45,37 @@ export default function ChatPage() {
 
         setIsAuthenticated(true)
         setUserId(session.user.id)
-        await loadConversations(session.user.id)
+        
+        // Load conversations
+        const { data: convData } = await supabase
+          .from('conversations')
+          .select('*')
+          .eq('user_id', session.user.id)
+          .order('created_at', { ascending: false })
+
+        if (convData) {
+          setConversations(convData as Conversation[])
+          
+          // If no conversations, create one
+          if (convData.length === 0) {
+            const newConv: Conversation = {
+              id: uuidv4(),
+              user_id: session.user.id,
+              title: 'New Conversation',
+              is_public: false,
+              is_deleted: false,
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }
+            
+            await supabase.from('conversations').insert([newConv])
+            addConversation(newConv)
+            setCurrentConversationId(newConv.id)
+          } else {
+            // Select first conversation
+            setCurrentConversationId(convData[0].id)
+          }
+        }
       } catch (error) {
         console.error('[v0] Auth error:', error)
         router.push('/auth')
@@ -54,10 +83,10 @@ export default function ChatPage() {
     }
 
     checkAuth()
-  }, [router])
+  }, [router, addConversation, setConversations, setCurrentConversationId])
 
   // Load conversations from DB
-  const loadConversations = async (uid: string) => {
+  const loadConversations = async (uid: string): Promise<Conversation[] | null> => {
     try {
       const supabase = getSupabase()
       const { data } = await supabase
@@ -68,9 +97,12 @@ export default function ChatPage() {
 
       if (data) {
         setConversations(data as Conversation[])
+        return data as Conversation[]
       }
+      return null
     } catch (error) {
       console.error('[v0] Load conversations error:', error)
+      return null
     }
   }
 
