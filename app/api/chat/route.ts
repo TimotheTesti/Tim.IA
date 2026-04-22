@@ -1,12 +1,12 @@
 import { streamText, stepCountIs } from 'ai'
 import { groq } from '@ai-sdk/groq'
-
-// Prolonge la fenêtre côté Vercel pour le streaming (auth + outils)
-export const maxDuration = 60
 import { createSupabaseUserClient } from '@/lib/supabase-user'
 import { loadUserMemories, extractAndInsertMemories } from '@/lib/user-memory'
 import { timChatTools } from '@/lib/chat-tools'
 import { getNowContextForPrompt } from '@/lib/server-now'
+
+// Prolonge la fenêtre côté Vercel pour le streaming (auth + outils)
+export const maxDuration = 60
 
 const TIM_SYSTEM_BASE = `You are Tim, a friendly, modern AI assistant created by an innovative team. You have a sophisticated yet approachable personality.
 
@@ -73,16 +73,27 @@ export async function POST(request: Request) {
     const lastUser = [...mapped].reverse().find((m) => m.role === 'user')
     const lastUserText = lastUser?.content ?? ''
 
+    const hasTavily = Boolean(process.env.TAVILY_API_KEY)
+
     const result = streamText({
       model: groq('llama-3.3-70b-versatile'),
       system,
       messages: mapped,
-      tools: timChatTools,
-      toolChoice: 'auto',
-      stopWhen: stepCountIs(6),
+      // Sans clé Tavily, ne pas enregistrer d’outils (évite des étapes inutiles / échecs en prod)
+      ...(hasTavily
+        ? { tools: timChatTools, toolChoice: 'auto' as const, stopWhen: stepCountIs(6) }
+        : { stopWhen: stepCountIs(1) }),
       temperature: 0.7,
       maxOutputTokens: 2048,
+      onError: ({ error }) => {
+        console.error('[Tim] streamText error:', error)
+      },
       onFinish: async (event) => {
+        if (!event.text?.trim()) {
+          console.error(
+            '[Tim] empty assistant text; check GROQ_API_KEY on Vercel (Production) and Groq account limits'
+          )
+        }
         if (!supabase || !lastUserText) return
         try {
           await extractAndInsertMemories(
