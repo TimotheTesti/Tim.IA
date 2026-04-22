@@ -1,5 +1,6 @@
-import { streamText, stepCountIs } from 'ai'
+import { generateText, stepCountIs } from 'ai'
 import { groq } from '@ai-sdk/groq'
+import { NextResponse } from 'next/server'
 import { createSupabaseUserClient } from '@/lib/supabase-user'
 import { loadUserMemories, extractAndInsertMemories } from '@/lib/user-memory'
 import { timChatTools } from '@/lib/chat-tools'
@@ -43,6 +44,16 @@ function coreMessages(
 
 export async function POST(request: Request) {
   try {
+    if (!process.env.GROQ_API_KEY?.trim()) {
+      return NextResponse.json(
+        {
+          error:
+            'GROQ_API_KEY manquante sur ce serveur. Ajoute-la dans Vercel → Settings → Environment Variables (Production), puis Redeploy.',
+        },
+        { status: 503 }
+      )
+    }
+
     const { messages } = await request.json()
 
     if (!messages || !Array.isArray(messages)) {
@@ -75,7 +86,8 @@ export async function POST(request: Request) {
 
     const hasTavily = Boolean(process.env.TAVILY_API_KEY)
 
-    const result = streamText({
+    // Réponse JSON (pas de stream) : les erreurs Groq / clés invalides remontent en exception ou texte vide détectable — plus fiable qu’un flux 200 vide sur Vercel.
+    const result = await generateText({
       model: groq('llama-3.3-70b-versatile'),
       system,
       messages: mapped,
@@ -85,9 +97,6 @@ export async function POST(request: Request) {
         : { stopWhen: stepCountIs(1) }),
       temperature: 0.7,
       maxOutputTokens: 2048,
-      onError: ({ error }) => {
-        console.error('[Tim] streamText error:', error)
-      },
       onFinish: async (event) => {
         if (!event.text?.trim()) {
           console.error(
@@ -108,10 +117,31 @@ export async function POST(request: Request) {
       },
     })
 
-    // Plain UTF-8 text stream (not SSE/JSON): most reliable on Safari, iOS, private mode, Vercel edge.
-    return result.toTextStreamResponse()
+    const text = result.text ?? ''
+    if (!text.trim()) {
+      return NextResponse.json(
+        {
+          error:
+            'Le modèle n’a renvoyé aucun texte. Vérifie GROQ_API_KEY (Production), les quotas Groq, et les logs de la fonction sur Vercel.',
+        },
+        { status: 502 }
+      )
+    }
+
+    return NextResponse.json({ text })
   } catch (error) {
     console.error('[v0] Chat API error:', error)
-    return new Response('Internal server error', { status: 500 })
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : 'Erreur inconnue'
+    return NextResponse.json(
+      {
+        error: `Échec de l’appel au modèle : ${message}`,
+      },
+      { status: 500 }
+    )
   }
 }

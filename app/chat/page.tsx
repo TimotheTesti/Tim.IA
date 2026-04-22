@@ -56,92 +56,47 @@ export default function ChatPage() {
         body: JSON.stringify({ messages: [...messages, userMessage] }),
       })
 
-      if (!response.ok) {
-        const errBody = await response.text().catch(() => response.statusText)
-        const msg = `Request failed (${response.status}): ${errBody || response.statusText}`
-        console.error('[Tim]', msg)
-        setStreamError(msg)
+      const contentType = response.headers.get('content-type') ?? ''
+      if (contentType.includes('application/json')) {
+        const data: { text?: string; error?: string } = await response.json()
+        if (!response.ok) {
+          const msg = data.error ?? response.statusText
+          const full = `Erreur (${response.status}): ${msg}`
+          console.error('[Tim]', full)
+          setStreamError(full)
+          setMessages((prev) => [
+            ...prev,
+            {
+              role: 'assistant',
+              content: `**Erreur** : impossible d’obtenir une réponse. ${msg.slice(0, 500)}`,
+            },
+          ])
+          return
+        }
+        const fullText = typeof data.text === 'string' ? data.text : ''
         setMessages((prev) => [
           ...prev,
-          {
-            role: 'assistant',
-            content: `**Erreur** : impossible d’obtenir une réponse. ${msg.slice(0, 400)}`,
-          },
+          { role: 'assistant', content: fullText },
         ])
+        if (!fullText.trim()) {
+          setStreamError(
+            'Réponse sans texte. Vérifie GROQ_API_KEY sur Vercel (Production) et les logs de la route `/api/chat`.'
+          )
+        }
         return
       }
 
-      // API returns text/plain UTF-8 chunks (see result.toTextStreamResponse) — no SSE/JSON to parse.
-      let fullText = ''
-      const reader = response.body?.getReader()
-      if (!reader) {
-        console.log('[v0] No response body reader')
-        setLoading(false)
-        return
-      }
-
-      const decoder = new TextDecoder()
+      const errBody = await response.text().catch(() => response.statusText)
+      const msg = `Request failed (${response.status}): ${errBody || response.statusText}`
+      console.error('[Tim]', msg)
+      setStreamError(msg)
       setMessages((prev) => [
         ...prev,
-        { role: 'assistant', content: '' },
+        {
+          role: 'assistant',
+          content: `**Erreur** : impossible d’obtenir une réponse. ${msg.slice(0, 400)}`,
+        },
       ])
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        if (value?.byteLength) {
-          fullText += decoder.decode(value, { stream: true })
-          setMessages((prev) => {
-            if (prev.length === 0) return prev
-            const next = [...prev]
-            const last = next[next.length - 1]
-            if (last?.role === 'assistant') {
-              next[next.length - 1] = { role: 'assistant', content: fullText }
-            } else {
-              next.push({ role: 'assistant', content: fullText })
-            }
-            return next
-          })
-        }
-      }
-      fullText += decoder.decode() // flush
-
-      setMessages((prev) => {
-        if (prev.length === 0) return prev
-        const next = [...prev]
-        if (next[next.length - 1]?.role === 'assistant') {
-          next[next.length - 1] = { role: 'assistant', content: fullText }
-        }
-        return next
-      })
-
-      if (!fullText.trim()) {
-        setStreamError(
-          'Aucun texte reçu. Vérifie la config Supabase (URL du site) sur le nouveau domaine, et les variables GROQ/TAVILY sur Vercel.'
-        )
-        setMessages((prev) => {
-          if (prev[prev.length - 1]?.role === 'assistant' && !prev[prev.length - 1].content) {
-            const copy = [...prev]
-            copy[copy.length - 1] = {
-              role: 'assistant',
-              content:
-                'Réponse vide. Ouvre la console (F12) → Network → la requête `chat` — souvent: session expirée (reconnecte-toi) ou clés API manquantes sur Vercel.',
-            }
-            return copy
-          }
-          if (prev[prev.length - 1]?.role === 'user') {
-            return [
-              ...prev,
-              {
-                role: 'assistant',
-                content:
-                  'Réponse vide. Ouvre F12 → Network sur `/api/chat`, et vérifie Supabase (Redirect URLs) pour ton **nouveau** domaine.',
-              },
-            ]
-          }
-          return prev
-        })
-      }
     } catch (error) {
       console.log('[v0] Error:', error)
       setStreamError(String(error))
@@ -191,11 +146,14 @@ export default function ChatPage() {
       <div className="border-t border-border p-4">
         <form onSubmit={handleSendMessage} className="flex gap-2">
           <Input
+            id="chat-message"
+            name="message"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Message Tim..."
             disabled={loading}
             className="flex-1"
+            autoComplete="off"
           />
           <Button type="submit" disabled={loading || !input.trim()}>
             Send
