@@ -1,314 +1,150 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
-import { ChatArea } from '@/components/chat-area'
-import { Sidebar } from '@/components/sidebar'
-import { useChatStore, UIMessage } from '@/lib/store'
-import { getSupabase, Conversation } from '@/lib/supabase'
-import { v4 as uuidv4 } from 'uuid'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { getSupabase } from '@/lib/supabase'
+
+type Message = { role: 'user' | 'assistant', content: string }
 
 export default function ChatPage() {
   const router = useRouter()
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [userId, setUserId] = useState<string | null>(null)
-  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null)
-  const [conversations, setConversations] = useState<Conversation[]>([])
-  const [messages, setMessages] = useState<UIMessage[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const [messages, setMessages] = useState<Message[]>([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
 
-  // Check auth on mount
   useEffect(() => {
     const checkAuth = async () => {
       try {
         const supabase = getSupabase()
-        const {
-          data: { session },
-        } = await supabase.auth.getSession()
-
-        if (!session) {
-          router.push('/auth')
-          return
-        }
-
-        setIsAuthenticated(true)
-        setUserId(session.user.id)
-        
-        // Load conversations
-        try {
-          const { data: convData } = await supabase
-            .from('conversations')
-            .select('*')
-            .eq('user_id', session.user.id)
-            .order('created_at', { ascending: false })
-
-          if (convData && convData.length > 0) {
-            setConversations(convData as Conversation[])
-            setCurrentConversationId(convData[0].id)
-            
-            // Load messages for first conversation
-            const { data: msgData } = await supabase
-              .from('messages')
-              .select('*')
-              .eq('conversation_id', convData[0].id)
-              .order('created_at', { ascending: true })
-
-            if (msgData) {
-              const uiMessages: UIMessage[] = msgData.map((msg: any) => ({
-                id: msg.id,
-                content: msg.content,
-                role: msg.role,
-                imageUrls: msg.image_urls,
-                timestamp: new Date(msg.created_at).getTime(),
-              }))
-              setMessages(uiMessages)
-            }
-          } else {
-            // Create first conversation
-            const newConv: Conversation = {
-              id: uuidv4(),
-              user_id: session.user.id,
-              title: 'New Conversation',
-              is_public: false,
-              is_deleted: false,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            }
-            
-            const { error } = await supabase.from('conversations').insert([newConv])
-            if (!error) {
-              setConversations([newConv])
-              setCurrentConversationId(newConv.id)
-            }
-          }
-        } catch (error) {
-          console.error('[v0] Load conversations error:', error)
-        }
+        const { data: { session } } = await supabase.auth.getSession()
+        if (!session) router.push('/auth')
       } catch (error) {
-        console.error('[v0] Auth error:', error)
+        console.log('[v0] Auth check failed:', error)
         router.push('/auth')
       }
     }
-
     checkAuth()
-  }, [])
+  }, [router])
 
-  const handleSendMessage = async (content: string, images?: string[], files?: string[]) => {
-    if (!userId || !currentConversationId) return
-    if (!content.trim()) return
+  const handleSendMessage = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!input.trim() || loading) return
 
-    setIsLoading(true)
+    const userMessage: Message = { role: 'user', content: input }
+    setMessages(prev => [...prev, userMessage])
+    setInput('')
+    setLoading(true)
 
-    // Add user message
-    const userMessage: UIMessage = {
-      id: uuidv4(),
-      content,
-      role: 'user',
-      imageUrls: images,
-      timestamp: Date.now(),
-    }
-
-    setMessages([...messages, userMessage])
-
-    // Save to DB
     try {
-      const supabase = getSupabase()
-      await supabase.from('messages').insert([
-        {
-          id: userMessage.id,
-          conversation_id: currentConversationId,
-          role: 'user',
-          content,
-          image_urls: images || [],
-          file_urls: files || [],
-          created_at: new Date().toISOString(),
-        },
-      ])
-    } catch (error) {
-      console.error('[v0] Save message error:', error)
-    }
-
-    // Call AI
-    try {
-      const assistantMessageId = uuidv4()
+      console.log('[v0] Sending to /api/chat:', { messages: [...messages, userMessage] })
       
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          messages: [
-            ...messages.map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-            { role: 'user', content },
-          ],
-        }),
+        body: JSON.stringify({ messages: [...messages, userMessage] })
       })
 
       if (!response.ok) {
-        console.error('[v0] Chat API error:', response.statusText)
-        setIsLoading(false)
+        console.log('[v0] API error:', response.status, response.statusText)
+        setLoading(false)
         return
       }
 
-      let fullContent = ''
-      const assistantMessage: UIMessage = {
-        id: assistantMessageId,
-        content: '',
-        role: 'assistant',
-        timestamp: Date.now(),
-      }
-      
-      setMessages((prev) => [...prev, assistantMessage])
-
+      let fullText = ''
       const reader = response.body?.getReader()
+      if (!reader) {
+        console.log('[v0] No response body reader')
+        setLoading(false)
+        return
+      }
+
       const decoder = new TextDecoder()
+      let buffer = ''
 
-      if (reader) {
-        let buffer = ''
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-          buffer += decoder.decode(value, { stream: true })
-          const lines = buffer.split('\n')
-          buffer = lines.pop() || ''
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
 
-          for (const line of lines) {
-            const trimmed = line.trim()
-            if (trimmed.startsWith('data:')) {
-              const data = trimmed.slice(5).trim()
-              if (data === '[DONE]') continue
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (trimmed.startsWith('data:')) {
+            const data = trimmed.slice(5).trim()
+            if (data === '[DONE]') continue
 
-              try {
-                const parsed = JSON.parse(data)
-                if (parsed.type === 'text-delta' && parsed.delta) {
-                  fullContent += parsed.delta
-                  setMessages((prev) =>
-                    prev.map((msg) =>
-                      msg.id === assistantMessageId
-                        ? { ...msg, content: fullContent }
-                        : msg
-                    )
-                  )
-                }
-              } catch (e) {
-                // Skip invalid JSON
+            try {
+              const parsed = JSON.parse(data)
+              if (parsed.type === 'text-delta' && parsed.delta) {
+                fullText += parsed.delta
+                setMessages(prev => {
+                  const updated = [...prev]
+                  const lastMsg = updated[updated.length - 1]
+                  if (lastMsg?.role === 'assistant') {
+                    lastMsg.content = fullText
+                  } else {
+                    updated.push({ role: 'assistant', content: fullText })
+                  }
+                  return updated
+                })
               }
+            } catch (e) {
+              // Skip invalid JSON
             }
           }
         }
       }
-
-      // Save assistant message to DB
-      try {
-        const supabase = getSupabase()
-        await supabase.from('messages').insert([
-          {
-            id: assistantMessageId,
-            conversation_id: currentConversationId,
-            role: 'assistant',
-            content: fullContent,
-            created_at: new Date().toISOString(),
-          },
-        ])
-      } catch (error) {
-        console.error('[v0] Save assistant message error:', error)
-      }
     } catch (error) {
-      console.error('[v0] Error sending message:', error)
+      console.log('[v0] Error:', error)
     } finally {
-      setIsLoading(false)
+      setLoading(false)
     }
-  }
-
-  const handleNewConversation = async () => {
-    if (!userId) return
-
-    try {
-      const supabase = getSupabase()
-      const newConv: Conversation = {
-        id: uuidv4(),
-        user_id: userId,
-        title: 'New Conversation',
-        is_public: false,
-        is_deleted: false,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
-
-      const { error } = await supabase.from('conversations').insert([newConv])
-
-      if (!error) {
-        setConversations([newConv, ...conversations])
-        setCurrentConversationId(newConv.id)
-        setMessages([])
-      }
-    } catch (error) {
-      console.error('[v0] New conversation error:', error)
-    }
-  }
-
-  const handleSelectConversation = async (id: string) => {
-    setCurrentConversationId(id)
-    
-    try {
-      const supabase = getSupabase()
-      const { data } = await supabase
-        .from('messages')
-        .select('*')
-        .eq('conversation_id', id)
-        .order('created_at', { ascending: true })
-
-      if (data) {
-        const uiMessages: UIMessage[] = data.map((msg: any) => ({
-          id: msg.id,
-          content: msg.content,
-          role: msg.role,
-          imageUrls: msg.image_urls,
-          timestamp: new Date(msg.created_at).getTime(),
-        }))
-        setMessages(uiMessages)
-      }
-    } catch (error) {
-      console.error('[v0] Load messages error:', error)
-    }
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin h-8 w-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"></div>
-          <p className="text-muted-foreground">Loading...</p>
-        </div>
-      </div>
-    )
   }
 
   return (
-    <div className="flex h-screen bg-background">
-      {sidebarOpen && (
-        <Sidebar
-          conversations={conversations}
-          currentConversationId={currentConversationId}
-          onSelectConversation={handleSelectConversation}
-          onNewConversation={handleNewConversation}
-          userId={userId}
-        />
-      )}
-      
-      <div className="flex-1 flex flex-col">
-        <ChatArea
-          onSendMessage={handleSendMessage}
-          isLoading={isLoading}
-          onToggleSidebar={() => setSidebarOpen(!sidebarOpen)}
-          theme={theme}
-          onThemeChange={setTheme}
-        />
+    <div className="h-screen bg-background flex flex-col">
+      <div className="flex-1 overflow-auto p-4 space-y-4">
+        {messages.length === 0 && (
+          <div className="text-center text-muted-foreground mt-20">
+            <p className="text-xl font-semibold">Welcome to Tim</p>
+            <p className="text-sm">Start typing to chat with Tim</p>
+          </div>
+        )}
+        {messages.map((msg, idx) => (
+          <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div className={`max-w-sm p-3 rounded-lg whitespace-pre-wrap ${
+              msg.role === 'user' 
+                ? 'bg-primary text-primary-foreground' 
+                : 'bg-secondary text-secondary-foreground'
+            }`}>
+              {msg.content}
+            </div>
+          </div>
+        ))}
+        {loading && (
+          <div className="flex justify-start">
+            <div className="text-muted-foreground text-sm italic">Tim is typing...</div>
+          </div>
+        )}
+      </div>
+
+      <div className="border-t border-border p-4">
+        <form onSubmit={handleSendMessage} className="flex gap-2">
+          <Input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="Message Tim..."
+            disabled={loading}
+            className="flex-1"
+          />
+          <Button type="submit" disabled={loading || !input.trim()}>
+            Send
+          </Button>
+        </form>
       </div>
     </div>
   )
