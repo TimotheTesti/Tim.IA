@@ -14,6 +14,7 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [streamError, setStreamError] = useState<string | null>(null)
 
   useEffect(() => {
     const checkAuth = async () => {
@@ -37,6 +38,7 @@ export default function ChatPage() {
     setMessages(prev => [...prev, userMessage])
     setInput('')
     setLoading(true)
+    setStreamError(null)
 
     try {
       const supabase = getSupabase()
@@ -55,11 +57,21 @@ export default function ChatPage() {
       })
 
       if (!response.ok) {
-        console.log('[v0] API error:', response.status, response.statusText)
-        setLoading(false)
+        const errBody = await response.text().catch(() => response.statusText)
+        const msg = `Request failed (${response.status}): ${errBody || response.statusText}`
+        console.error('[Tim]', msg)
+        setStreamError(msg)
+        setMessages((prev) => [
+          ...prev,
+          {
+            role: 'assistant',
+            content: `**Erreur** : impossible d’obtenir une réponse. ${msg.slice(0, 400)}`,
+          },
+        ])
         return
       }
 
+      // API returns text/plain UTF-8 chunks (see result.toTextStreamResponse) — no SSE/JSON to parse.
       let fullText = ''
       const reader = response.body?.getReader()
       if (!reader) {
@@ -69,45 +81,70 @@ export default function ChatPage() {
       }
 
       const decoder = new TextDecoder()
-      let buffer = ''
+      setMessages((prev) => [
+        ...prev,
+        { role: 'assistant', content: '' },
+      ])
 
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          const trimmed = line.trim()
-          if (trimmed.startsWith('data:')) {
-            const data = trimmed.slice(5).trim()
-            if (data === '[DONE]') continue
-
-            try {
-              const parsed = JSON.parse(data)
-              if (parsed.type === 'text-delta' && parsed.delta) {
-                fullText += parsed.delta
-                setMessages(prev => {
-                  const updated = [...prev]
-                  const lastMsg = updated[updated.length - 1]
-                  if (lastMsg?.role === 'assistant') {
-                    lastMsg.content = fullText
-                  } else {
-                    updated.push({ role: 'assistant', content: fullText })
-                  }
-                  return updated
-                })
-              }
-            } catch (e) {
-              // Skip invalid JSON
+        if (value?.byteLength) {
+          fullText += decoder.decode(value, { stream: true })
+          setMessages((prev) => {
+            if (prev.length === 0) return prev
+            const next = [...prev]
+            const last = next[next.length - 1]
+            if (last?.role === 'assistant') {
+              next[next.length - 1] = { role: 'assistant', content: fullText }
+            } else {
+              next.push({ role: 'assistant', content: fullText })
             }
-          }
+            return next
+          })
         }
+      }
+      fullText += decoder.decode() // flush
+
+      setMessages((prev) => {
+        if (prev.length === 0) return prev
+        const next = [...prev]
+        if (next[next.length - 1]?.role === 'assistant') {
+          next[next.length - 1] = { role: 'assistant', content: fullText }
+        }
+        return next
+      })
+
+      if (!fullText.trim()) {
+        setStreamError(
+          'Aucun texte reçu. Vérifie la config Supabase (URL du site) sur le nouveau domaine, et les variables GROQ/TAVILY sur Vercel.'
+        )
+        setMessages((prev) => {
+          if (prev[prev.length - 1]?.role === 'assistant' && !prev[prev.length - 1].content) {
+            const copy = [...prev]
+            copy[copy.length - 1] = {
+              role: 'assistant',
+              content:
+                'Réponse vide. Ouvre la console (F12) → Network → la requête `chat` — souvent: session expirée (reconnecte-toi) ou clés API manquantes sur Vercel.',
+            }
+            return copy
+          }
+          if (prev[prev.length - 1]?.role === 'user') {
+            return [
+              ...prev,
+              {
+                role: 'assistant',
+                content:
+                  'Réponse vide. Ouvre F12 → Network sur `/api/chat`, et vérifie Supabase (Redirect URLs) pour ton **nouveau** domaine.',
+              },
+            ]
+          }
+          return prev
+        })
       }
     } catch (error) {
       console.log('[v0] Error:', error)
+      setStreamError(String(error))
     } finally {
       setLoading(false)
     }
@@ -122,6 +159,11 @@ export default function ChatPage() {
         </div>
       </header>
       <div className="flex-1 overflow-auto p-4 space-y-4">
+        {streamError && (
+          <p className="text-sm text-destructive text-center max-w-md mx-auto" role="alert">
+            {streamError}
+          </p>
+        )}
         {messages.length === 0 && (
           <div className="text-center text-muted-foreground mt-20">
             <p className="text-xl font-semibold">Welcome to Tim</p>

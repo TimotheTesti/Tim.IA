@@ -1,5 +1,8 @@
 import { streamText, stepCountIs } from 'ai'
 import { groq } from '@ai-sdk/groq'
+
+// Prolonge la fenêtre côté Vercel pour le streaming (auth + outils)
+export const maxDuration = 60
 import { createSupabaseUserClient } from '@/lib/supabase-user'
 import { loadUserMemories, extractAndInsertMemories } from '@/lib/user-memory'
 import { timChatTools } from '@/lib/chat-tools'
@@ -94,7 +97,8 @@ export async function POST(request: Request) {
       },
     })
 
-    return result.toUIMessageStreamResponse()
+    // Plain UTF-8 text stream (not SSE/JSON): most reliable on Safari, iOS, private mode, Vercel edge.
+    return result.toTextStreamResponse()
   } catch (error) {
     console.error('[v0] Chat API error:', error)
     return new Response('Internal server error', { status: 500 })
